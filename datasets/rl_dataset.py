@@ -13,10 +13,11 @@ from datasets.get_train_dbs import get_train_dbs
 from utils.get_video_infos import get_video_infos
 
 import time
-from trainers.RL_tools import TrackingEnvironment
+from trainers.RL_tools import TrackingEnvironment, RL_loss
 from utils.augmentations import ADNet_Augmentation
 from utils.display import display_result, draw_box
 from torch.distributions import Categorical
+
 
 class RLDataset(data.Dataset):
 
@@ -57,13 +58,13 @@ class RLDataset(data.Dataset):
         self.result_box_list = []
         self.vid_idx_list = []
 
-        print('generating reinforcement learning dataset')
-        transform = ADNet_Augmentation(opts)
+        # print('Generating reinforcement learning dataset...')
+        transform = ADNet_Augmentation(opts, True)
 
-        self.env = TrackingEnvironment(train_videos, opts, transform=transform, args=args)
+        self.env = TrackingEnvironment(train_videos, opts, transform, args)
         clip_idx = 0
         while True:  # for every clip (l)
-
+            tic = time.time()
             num_step_history = []  # T_l
 
             num_frame = 1  # the first frame won't be tracked..
@@ -76,21 +77,18 @@ class RLDataset(data.Dataset):
                 net.reset_action_dynamic()  # action dynamic should be in a clip (what makes sense...)
 
             while True:  # for every frame in a clip (t)
-                tic = time.time()
 
                 if args.display_images:
                     im_with_bb = display_result(self.env.get_current_img(), self.env.get_state())
                     cv2.imshow('patch', self.env.get_current_patch_unprocessed())
                     cv2.waitKey(1)
-                else:
+                elif args.save_result_images:
                     im_with_bb = draw_box(self.env.get_current_img(), self.env.get_state())
-
-                if args.save_result_images:
                     cv2.imwrite('images/' + str(clip_idx) + '-' + str(t) + '.jpg', im_with_bb)
 
                 curr_patch = self.env.get_current_patch()
                 if args.cuda:
-                    curr_patch = curr_patch.cuda()
+                    curr_patch = curr_patch.to('cuda', non_blocking=True)
 
                 # self.patch_list.append(curr_patch.cpu().data.numpy())  # TODO: saving patch takes cuda memory
 
@@ -112,26 +110,28 @@ class RLDataset(data.Dataset):
                 else:
                     net.load_domain_specific(domain_specific_nets[vid_idx])
 
-                fc6_out, fc7_out = net.forward(curr_patch, update_action_dynamic=True)
+                action_probs, fc7_out = net.forward(curr_patch, update_action_dynamic=True)
 
-                if args.cuda:
-                    action = np.argmax(fc6_out.detach().cpu().numpy())  # TODO: really okay to detach?
-                    action_prob = fc6_out.detach().cpu().numpy()[0][action]
-                else:
-                    action = np.argmax(fc6_out.detach().numpy())  # TODO: really okay to detach?
-                    action_prob = fc6_out.detach().numpy()[0][action]
+                m = Categorical(action_probs)
+                sampled_action = m.sample()
+                log_prob = m.log_prob(sampled_action)
 
-                m = Categorical(probs=fc6_out)
-                action_ = m.sample()  # action and action_ are same value. Only differ in the type (int and tensor)
+                action = sampled_action.item()
+                # action = action_probs.argmax().item()
 
-                self.log_probs_list.append(m.log_prob(action_).cpu().data.numpy())
+                # m = Categorical(probs=fc6_out)
+                # action_ = m.sample()  # action and action_ are same value. Only differ in the type (int and tensor)
+                self.log_probs_list.append(log_prob)
                 self.vid_idx_list.append(vid_idx)
-
+                net.module.add_action_to_hist(action)
                 self.action_list.append(action)
                 # TODO: saving action_prob_list takes cuda memory
                 # self.action_prob_list.append(action_prob)
 
                 new_state, reward, done, info = self.env.step(action)
+
+                # loss = RL_loss(m.log_prob(sampled_action), torch.Tensor([reward]))
+                # loss.backward(retain_graph=True)
 
                 # check oscilating
                 if any((np.array(new_state).round() == x).all() for x in np.array(box_history_clip).round()):
@@ -147,7 +147,7 @@ class RLDataset(data.Dataset):
 
                 # TODO: saving result_box takes cuda memory
                 # self.result_box_list.append(list(new_state))
-                box_history_clip.append(list(new_state))
+                box_history_clip.append(new_state)
 
                 t += 1
 
@@ -156,9 +156,7 @@ class RLDataset(data.Dataset):
                     num_step_history.append(t)
                     t = 0
 
-                toc = time.time() - tic
-                print('forward time (clip ' + str(clip_idx) + " - frame " + str(num_frame) + " - t " + str(t) + ") = "
-                      + str(toc) + " s")
+
 
                 if done:  # if finish the clip
                     break
@@ -168,11 +166,12 @@ class RLDataset(data.Dataset):
 
             self.reward_list.extend(tracking_scores)
             # self.reward_list.append(tracking_scores)
-
+            toc = time.time() - tic
+            # print('forward time (clip ' + str(clip_idx) + " - t " + str(t) + ") = "
+            #       + str(toc) + " s")
             clip_idx += 1
 
             if info['finish_epoch']:
                 break
 
-        print('generating reinforcement learning dataset finish')
-
+        # print('generating reinforcement learning dataset finish')

@@ -8,6 +8,7 @@ from options.general import opts
 from utils.overlap_ratio import overlap_ratio
 
 
+# bb is in format [x,y,width,height]
 def gen_action_labels(num_actions, opts, bb_samples, gt_bbox):
     num_samples = len(bb_samples)
 
@@ -17,12 +18,12 @@ def gen_action_labels(num_actions, opts, bb_samples, gt_bbox):
     for j in range(len(bb_samples)):
         bbox = bb_samples[j, :]
 
-        bbox[0] = bbox[0] + 0.5*bbox[2]
-        bbox[1] = bbox[1] + 0.5*bbox[3]
+        bbox[0] = bbox[0] + 0.5 * bbox[2]
+        bbox[1] = bbox[1] + 0.5 * bbox[3]
 
         deltas = [m['x'] * bbox[2], m['y'] * bbox[3], m['w'] * bbox[2], m['h'] * bbox[3]]
         # deltas = np.max(deltas)
-        ar = bbox[2]/bbox[3]
+        ar = bbox[2] / bbox[3]
         if bbox[2] > bbox[3]:
             deltas[3] = deltas[2] / ar
         else:
@@ -37,7 +38,7 @@ def gen_action_labels(num_actions, opts, bb_samples, gt_bbox):
         action_boxes[:, 1] = action_boxes[:, 1] - 0.5 * action_boxes[:, 3]
 
         overs = overlap_ratio(action_boxes, np.matlib.repmat(gt_bbox, num_actions, 1))
-        max_action = np.argmax(overs[:-2])   # translation overlap
+        max_action = np.argmax(overs[:-2])  # translation overlap
         max_value = overs[max_action]
 
         if overs[opts['stop_action']] > opts['stopIou']:

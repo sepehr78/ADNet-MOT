@@ -52,10 +52,10 @@ def adnet_test(net, vid_path, opts, args):
         'nframes' : 0
     }
 
-    vid_info['img_files'] = glob.glob(os.path.join(vid_path, 'img', '*.jpg'))
+    vid_info['img_files'] = glob.glob(os.path.join(vid_path, 'color', '*.jpg'))
     vid_info['img_files'].sort(key=str.lower)
 
-    gt_path = os.path.join(vid_path, 'groundtruth_rect.txt')
+    gt_path = os.path.join(vid_path, 'groundtruth.txt')
 
     if not os.path.exists(gt_path):
         bboxes = []
@@ -281,18 +281,18 @@ def adnet_test(net, vid_path, opts, args):
             iteration_range = range(opts['finetune_iters_online'])
 
         # training when depend on the frequency.. else, don't run the training code...
-        if frame_idx % args.online_adaptation_every_I_frames == 0:
+        if False and frame_idx % args.online_adaptation_every_I_frames == 0:
             ntraining += 1
             # generate dataset just before training
             dataset_pos = OnlineAdaptationDataset(dataset_storage_pos)
             data_loader_pos = data.DataLoader(dataset_pos, opts['minibatch_size'], num_workers=args.num_workers,
-                                              shuffle=True, pin_memory=True)
+                                              shuffle=True, pin_memory=False)
             batch_iterator_pos = None
 
             if opts['nNeg_init'] != 0:  # (thanks to small hack in adnet_test) the nNeg_online is also 0
                 dataset_neg = OnlineAdaptationDataset(dataset_storage_neg)
                 data_loader_neg = data.DataLoader(dataset_neg, opts['minibatch_size'], num_workers=args.num_workers,
-                                                  shuffle=True, pin_memory=True)
+                                                  shuffle=True, pin_memory=False)
                 batch_iterator_neg = None
             else:
                 dataset_neg = []

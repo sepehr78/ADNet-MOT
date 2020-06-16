@@ -2,7 +2,7 @@ from __future__ import print_function, division, absolute_import
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-#from torch.legacy import nn as nnl
+# from torch.legacy import nn as nnl
 import torch.utils.model_zoo as model_zoo
 import torch.backends.cudnn as cudnn
 
@@ -32,11 +32,12 @@ class ADNetDomainSpecific(nn.Module):
     This module purpose is only for saving the state_dict's domain-specific layers of each domain.
     Put this module to CPU
     """
+
     def __init__(self, num_classes, num_history):
         super(ADNetDomainSpecific, self).__init__()
         action_dynamic_size = num_classes * num_history
         self.fc6 = nn.Linear(512 + action_dynamic_size, num_classes)
-        self.fc7 = nn.Linear(512 + action_dynamic_size, 2)
+        self.fc7 = nn.Linear(512 + action_dynamic_size, 1)
 
     def load_weights(self, base_file, video_index):
         """
@@ -111,10 +112,15 @@ class ADNet(nn.Module):
         if self.use_gpu:
             self.action_dynamic = self.action_dynamic.cuda()
 
-        self.fc6 = nn.Linear(512 + self.action_dynamic_size, self.num_classes)
-        self.fc7 = nn.Linear(512 + self.action_dynamic_size, 2)
+        # self.fc6 = nn.Linear(512 + self.action_dynamic_size, self.num_classes)
+        # self.fc7 = nn.Linear(512 + self.action_dynamic_size, 2)
 
-        self.softmax = nn.Softmax()
+        # self.rnn = nn.RNN(self.num_classes, 12, 1, batch_first=True)
+        self.fc6 = nn.Linear(512 + self.action_dynamic_size, self.num_classes)
+        self.fc7 = nn.Linear(512 + self.action_dynamic_size, 1)
+
+        self.softmax = nn.Softmax(dim=1)
+        self.sigmoid = nn.Sigmoid()
 
     # update_action_dynamic: history of action. We don't update the action_dynamic in SL learning.
     def forward(self, x, action_dynamic=None, update_action_dynamic=False):
@@ -139,17 +145,22 @@ class ADNet(nn.Module):
         fc6_out = self.fc6(x)
         fc7_out = self.fc7(x)
 
-        if self.phase == 'test':
-            fc6_out = self.softmax(fc6_out)
-            fc7_out = self.softmax(fc7_out)
+        # if self.phase == 'test':
+        fc6_out = self.softmax(fc6_out)
+        fc7_out = self.sigmoid(fc7_out)
 
-        if update_action_dynamic:
-            selected_action = np.argmax(fc6_out.detach().cpu().numpy())  # TODO: really okay to detach?
-            self.action_history[1:] = self.action_history[0:-1]
-            self.action_history[0] = selected_action
-            self.update_action_dynamic(self.action_history)
+        # if update_action_dynamic:
+        #     selected_action = np.argmax(fc6_out.detach().cpu().numpy())  # TODO: really okay to detach?
+        #     self.action_history[1:] = self.action_history[0:-1]
+        #     self.action_history[0] = selected_action
+        #     self.update_action_dynamic(self.action_history)
 
         return fc6_out, fc7_out
+
+    def add_action_to_hist(self, selected_action):
+        self.action_history[1:] = self.action_history[0:-1]
+        self.action_history[0] = selected_action
+        self.update_action_dynamic(self.action_history)
 
     def load_domain_specific(self, adnet_domain_specific):
         """
@@ -174,17 +185,15 @@ class ADNet(nn.Module):
         # 3. load the new state dict
         self.load_state_dict(model_dict)
 
-        pass
-
         # # return the adnet_domain_specific to cpu (to save gpu memory)
         # if self.use_gpu:
         #     adnet_domain_specific.cpu()
 
-    def load_weights(self, base_file, load_domain_specific=None):
+    def load_weights(self, base_file, domain_spec_index=None):
         """
         Args:
             base_file: (string) checkpoint filename
-            load_domain_specific: (None or int) None if not loading.
+            domain_spec_index: (None or int) None if not loading.
                 Fill it with int of the video idx to load the specific domain weight
         """
         other, ext = os.path.splitext(base_file)
@@ -210,23 +219,16 @@ class ADNet(nn.Module):
 
             # 1. filter out unnecessary keys
             pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+
             # 2. overwrite entries in the existing state dict
             model_dict.update(pretrained_dict)
+
             # 3. load the new state dict
-            self.load_state_dict(pretrained_dict)
+            self.load_state_dict(model_dict)
 
             # load specific domain
-            if load_domain_specific is not None:
-                # load adnet
-                pretrained_dict = checkpoint['adnet_domain_specific_state_dict'][load_domain_specific]
-                model_dict = self.state_dict()
-
-                # 1. filter out unnecessary keys
-                pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-                # 2. overwrite entries in the existing state dict
-                model_dict.update(pretrained_dict)
-                # 3. load the new state dict
-                self.load_state_dict(pretrained_dict)
+            if domain_spec_index is not None:
+                self.load_domain_specific(checkpoint['adnet_domain_specific_state_dict'][domain_spec_index])
 
             print('Finished!')
         else:
@@ -237,12 +239,12 @@ class ADNet(nn.Module):
 
         action_dynamic = onehot_action
 
-        self.action_dynamic = torch.Tensor(np.array(action_dynamic))
+        self.action_dynamic = torch.Tensor(action_dynamic)
         if self.use_gpu:
             self.action_dynamic = self.action_dynamic.cuda()
 
     def reset_action_dynamic(self):
-        self.action_dynamic = torch.Tensor(np.zeros(self.action_dynamic_size))
+        self.action_dynamic = torch.zeros(self.action_dynamic_size)
         if self.use_gpu:
             self.action_dynamic = self.action_dynamic.cuda()
 
@@ -253,7 +255,8 @@ class ADNet(nn.Module):
         self.phase = phase
 
 
-def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain_specific=False, multidomain=True):
+def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain_specific=False, multidomain=True,
+          vid_index=None):
     """
     Args:
         base_network: (string)
@@ -261,6 +264,7 @@ def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain
         random_initialize_domain_specific: (bool) if there is trained file, whether to use the weight in the file (True)
             or just random initialize (False). Won't matter if the trained_file is None (always False)
         multidomain: (bool) whether to have separate weight for each video or not. Default True: separate
+        vid_index: (int) index of video for which to load weights (used for testing).
     Returns:
         adnet_model: (ADNet)
         domain_nets: (list of ADNetDomainSpecific) length: #videos
@@ -270,7 +274,7 @@ def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain
     num_classes = opts['num_actions']
     num_history = opts['num_action_history']
 
-    assert num_classes in [11], "num classes is not exist"
+    assert num_classes in [11], "num classes does not exist"
 
     settings = pretrained_settings['adnet']
 
@@ -294,7 +298,7 @@ def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain
         #     cudnn.benchmark = True
         #     adnet_model = adnet_model.cuda()
 
-        adnet_model.load_weights(trained_file)
+        adnet_model.load_weights(trained_file, vid_index)
 
         adnet_model.input_space = settings['input_space']
         adnet_model.input_size = settings['input_size']
@@ -311,6 +315,19 @@ def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain
     else:
         num_videos = 1
 
+    if not (trained_file and not random_initialize_domain_specific):
+        scal = torch.Tensor([0.01])
+        # fc 6
+        nn.init.normal_(adnet_model.fc6.weight.data)
+        adnet_model.fc6.weight.data = adnet_model.fc6.weight.data * scal.expand_as(
+            adnet_model.fc6.weight.data)
+        adnet_model.fc6.bias.data.fill_(0)
+        # fc 7
+        nn.init.normal_(adnet_model.fc7.weight.data)
+        adnet_model.fc7.weight.data = adnet_model.fc7.weight.data * scal.expand_as(
+            adnet_model.fc7.weight.data)
+        adnet_model.fc7.bias.data.fill_(0)
+
     for idx in range(num_videos):
         domain_nets.append(ADNetDomainSpecific(num_classes=num_classes, num_history=num_history))
 
@@ -318,14 +335,16 @@ def adnet(opts, base_network='vggm', trained_file=None, random_initialize_domain
 
         if trained_file and not random_initialize_domain_specific:
             domain_nets[idx].load_weights(trained_file, idx)
-        else:
+        else:  # random initialization of weights for fc 6 and fc7
             # fc 6
             nn.init.normal_(domain_nets[idx].fc6.weight.data)
-            domain_nets[idx].fc6.weight.data = domain_nets[idx].fc6.weight.data * scal.expand_as(domain_nets[idx].fc6.weight.data)
+            domain_nets[idx].fc6.weight.data = domain_nets[idx].fc6.weight.data * scal.expand_as(
+                domain_nets[idx].fc6.weight.data)
             domain_nets[idx].fc6.bias.data.fill_(0)
             # fc 7
             nn.init.normal_(domain_nets[idx].fc7.weight.data)
-            domain_nets[idx].fc7.weight.data = domain_nets[idx].fc7.weight.data * scal.expand_as(domain_nets[idx].fc7.weight.data)
+            domain_nets[idx].fc7.weight.data = domain_nets[idx].fc7.weight.data * scal.expand_as(
+                domain_nets[idx].fc7.weight.data)
             domain_nets[idx].fc7.bias.data.fill_(0)
 
     return adnet_model, domain_nets

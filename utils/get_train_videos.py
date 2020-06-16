@@ -7,6 +7,7 @@ from utils.get_benchmark_info import get_benchmark_info
 import numpy as np
 import numpy.matlib
 
+
 def get_train_videos(opts):
     train_db_names = opts['train_dbs']
     test_db_names = opts['test_db']
@@ -25,11 +26,11 @@ def get_train_videos(opts):
         bench_names.extend(list(np.matlib.repmat(bench_name, 1, len(video_names_))[0]))
 
     train_db = {
-        'video_names' : video_names,
-        'video_paths' : video_paths,
-        'bench_names' : bench_names
+        'video_names': video_names,
+        'video_paths': video_paths,
+        'bench_names': bench_names
     }
     return train_db
 
 # test the module
-#get_train_videos(opts)
+# get_train_videos(opts)

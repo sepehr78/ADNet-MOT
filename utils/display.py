@@ -17,3 +17,10 @@ def display_result(image, box):
     cv2.waitKey(1)
 
     return im_with_bb
+# def display_result(image, box_list):
+#     for box in box_list:
+#         image = draw_box(image, box)
+#     cv2.imshow("result", image)
+#     cv2.waitKey(1)
+#
+#     return image

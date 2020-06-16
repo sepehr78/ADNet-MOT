@@ -1,35 +1,35 @@
 # matlab code:
 # https://github.com/hellbell/ADNet/blob/3a7955587b5d395401ebc94a5ab067759340680d/utils/get_extract_regions.m
 # other reference: https://github.com/amdegroot/ssd.pytorch/blob/master/utils/augmentations.py
+import time
 
 import numpy as np
 import types
+import torchvision
 import torch
 from torchvision import transforms
 import cv2
 import types
 from numpy import random
+from torchvision.transforms.functional import normalize
 
 
 class ToTensor(object):
     def __call__(self, cvimage, box=None, action_label=None, conf_label=None):
-        return torch.from_numpy(cvimage.astype(np.float32)).permute(2, 0, 1), box, action_label, conf_label
+        return torch.from_numpy(cvimage).permute(2, 0, 1), box, action_label, conf_label
 
 
 class SubtractMeans(object):
-    def __init__(self, mean):
-        self.mean = np.array(mean, dtype=np.float32)
-
     def __call__(self, image, box=None, action_label=None, conf_label=None):
-        image = image.astype(np.float32)
-        image -= self.mean
-        return image.astype(np.float32), box, action_label, conf_label
+        image = image.astype(np.float32, copy=False)
+        mean = np.mean(image, axis=(0, 1), keepdims=True)
+        std = np.std(image, axis=(0, 1), keepdims=True)
+        image = (image - mean) / std
+        return image, box, action_label, conf_label
 
 
 class CropRegion(object):
     def __call__(self, image, box, action_label=None, conf_label=None):
-        image = np.array(image)
-        box = np.array(box)
         if box is not None:
             center = box[0:2] + 0.5 * box[2:4]
             wh = box[2:4] * 1.4  # multiplication = 1.4
@@ -44,9 +44,9 @@ class CropRegion(object):
 
             im = image[int(box_[1]):int(box_[3]), int(box_[0]):int(box_[2]), :]
         else:
-            im = image[:, :, :]
+            im = image
 
-        return im.astype(np.float32), box, action_label, conf_label
+        return im, box, action_label, conf_label
 
 
 # crop "multiplication" times of the box width and height
@@ -85,7 +85,7 @@ class ResizeImage(object):
 
     def __call__(self, image, box, action_label=None, conf_label=None):
         im = cv2.resize(image, dsize=tuple(self.inputSize[:2]))
-        return im.astype(np.float32), box, action_label, conf_label
+        return im, box, action_label, conf_label
 
 
 class Compose(object):
@@ -103,20 +103,36 @@ class Compose(object):
         self.transforms = transforms
 
     def __call__(self, img, box=None, action_label=None, conf_label=None):
-        for t in self.transforms:
+        if box is not None and type(box) is not np.ndarray:
+            box = np.array(box)
+        # time_arr = np.empty(len(self.transforms))
+        for i, t in enumerate(self.transforms):
+            # t0 = time.time()
             img, box, action_label, conf_label = t(img, box, action_label, conf_label)
+            # t1 = time.time()
+            # time_arr[i] = t1 - t0
+        # print("Trans. time {}".format(time_arr))
         return img, box, action_label, conf_label
 
 
 class ADNet_Augmentation(object):
-    def __init__(self, opts):
-        self.augment = Compose([
-            SubtractMeans(opts['means']),
-            CropRegion(),
-            ResizeImage(opts['inputSize']),
-            ToTensor()
-        ])
+    def __init__(self, opts, subtract_mean=False):
+        if subtract_mean:
+            self.augment = Compose([
+                # torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                SubtractMeans(),
+                CropRegion(),
+                ResizeImage(opts['inputSize']),
+                ToTensor()
+            ])
+        else:
+            self.augment = Compose([
+                # torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                # SubtractMeans(opts['means']),
+                CropRegion(),
+                ResizeImage(opts['inputSize']),
+                ToTensor()
+            ])
 
     def __call__(self, img, box, action_label=None, conf_label=None):
         return self.augment(img, box, action_label, conf_label)
-

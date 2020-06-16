@@ -3,6 +3,7 @@
 
 import os
 
+
 def get_benchmark_info(bench_name=None):
     if bench_name is None:
         bench_name = 'otb-vot15'
